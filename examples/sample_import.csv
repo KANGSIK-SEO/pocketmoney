@@ -1,0 +1,6 @@
+date,type,category,amount,memo,tags
+2024-01-10,income,salary,3500000,1월 급여,급여,본업
+2024-01-12,expense,food,18000,점심 식사,식비
+2024-01-14,expense,transport,2500,지하철,교통
+2024-01-15,expense,rent,450000,1월 월세,고정지출
+2024-01-20,expense,entertainment,22000,영화 관람,문화생활
