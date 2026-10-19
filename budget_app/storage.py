@@ -21,6 +21,7 @@ DEFAULT_CATEGORIES = [
     "allowance",
     "entertainment",
     "shopping",
+    "medical",
     "etc",
     "식비",
     "교통",
@@ -28,6 +29,7 @@ DEFAULT_CATEGORIES = [
     "급여",
     "용돈",
     "문화/여가",
+    "의료/건강",
     "기타",
 ]
 

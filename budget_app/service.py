@@ -365,6 +365,8 @@ class BudgetService:
 
                         memo_val = row.get("memo", "").strip() if "memo" in row else ""
                         raw_tags = row.get("tags", "").strip() if "tags" in row else ""
+                        if None in row and row[None]:
+                            raw_tags = ",".join([raw_tags] + [str(x).strip() for x in row[None] if x])
                         tag_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
 
                         tx_id = self.storage.transactions.generate_next_id()
