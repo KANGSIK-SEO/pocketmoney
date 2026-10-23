@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--data-dir",
-        default="./data",
+        default=os.environ.get("BUDGET_APP_DATA_DIR", "./data"),
         help="데이터 저장 폴더 경로 (기본값: ./data)",
     )
     parser.add_argument(
@@ -521,10 +521,88 @@ def run_recurring(service: BudgetService, args: argparse.Namespace) -> int:
         return 1
 
 
+def normalize_cli_args(argv: List[str]) -> List[str]:
+    """Normalize Korean commands and subcommands to canonical English names."""
+    if not argv:
+        return []
+
+    tokens = list(argv)
+    normalized: List[str] = []
+    i = 0
+
+    cmd_map = {
+        "추가": "add",
+        "거래추가": "add",
+        "목록": "list",
+        "조회": "list",
+        "내역": "list",
+        "거래목록": "list",
+        "검색": "search",
+        "거래검색": "search",
+        "요약": "summary",
+        "월별요약": "summary",
+        "월별 요약": "summary",
+        "리포트": "summary",
+        "예산": "budget",
+        "예산관리": "budget",
+        "카테고리": "category",
+        "카테고리관리": "category",
+        "카테고리 관리": "category",
+        "수정": "update",
+        "거래수정": "update",
+        "삭제": "delete",
+        "거래삭제": "delete",
+        "가져오기": "import",
+        "임포트": "import",
+        "내보내기": "export",
+        "익스포트": "export",
+        "백업": "backup",
+        "반복": "recurring",
+        "반복거래": "recurring",
+    }
+
+    subcmd_map = {
+        "설정": "set",
+        "추가": "add",
+        "목록": "list",
+        "조회": "list",
+        "삭제": "remove",
+        "제거": "remove",
+        "적용": "apply",
+    }
+
+    while i < len(tokens):
+        # Two-word commands like "월별 요약", "카테고리 관리"
+        if i + 1 < len(tokens):
+            two_word = f"{tokens[i]} {tokens[i+1]}"
+            if two_word in ("월별 요약", "카테고리 관리"):
+                if two_word == "월별 요약":
+                    normalized.append("summary")
+                elif two_word == "카테고리 관리":
+                    normalized.append("category")
+                i += 2
+                continue
+
+        tok = tokens[i]
+        if normalized and normalized[-1] in ("budget", "category", "recurring") and tok in subcmd_map:
+            normalized.append(subcmd_map[tok])
+        elif tok in cmd_map:
+            normalized.append(cmd_map[tok])
+        else:
+            normalized.append(tok)
+        i += 1
+
+    return normalized
+
+
 @handle_cli_errors
 @measure_time
 def main(argv: Optional[List[str]] = None) -> int:
     """Main CLI entrypoint."""
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = normalize_cli_args(argv)
+
     parser = build_parser()
     args = parser.parse_args(argv)
 

@@ -138,6 +138,43 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("imported=1", out)
 
+    def test_cli_korean_aliases(self):
+        # 1. 카테고리 추가 / 목록
+        code, out, err = self.run_cli(["카테고리", "추가", "문화"])
+        self.assertEqual(code, 0)
+        self.assertIn("category=문화", out)
+
+        code, out, err = self.run_cli(["카테고리 관리", "목록"])
+        self.assertEqual(code, 0)
+        self.assertIn("문화", out)
+
+        # 2. 거래 추가 (한글 서브커맨드)
+        inputs = "2024-02-10\nexpense\n문화\n30000\n영화\n\n"
+        code, out, err = self.run_cli(["추가"], input_text=inputs)
+        self.assertEqual(code, 0)
+        self.assertIn("[저장 완료] id=TX-000001", out)
+
+        # 3. 목록 조회 (한글 서브커맨드)
+        code, out, err = self.run_cli(["목록"])
+        self.assertEqual(code, 0)
+        self.assertIn("영화", out)
+
+        # 4. 검색 (한글 서브커맨드)
+        code, out, err = self.run_cli(["검색", "--q", "영화"])
+        self.assertEqual(code, 0)
+        self.assertIn("영화", out)
+
+        # 5. 예산 설정 (한글 서브커맨드)
+        code, out, err = self.run_cli(["예산", "설정", "--month", "2024-02", "--amount", "200000"])
+        self.assertEqual(code, 0)
+        self.assertIn("2024-02 예산 200000원", out)
+
+        # 6. 월별 요약 (한글 서브커맨드)
+        code, out, err = self.run_cli(["월별", "요약", "--month", "2024-02"])
+        self.assertEqual(code, 0)
+        self.assertIn("총 지출: 30000원", out)
+        self.assertIn("예산: 200000원", out)
+
 
 if __name__ == "__main__":
     unittest.main()
