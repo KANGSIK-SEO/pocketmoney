@@ -7,8 +7,9 @@ and dispatches requests to the BudgetService.
 import argparse
 from datetime import datetime
 import os
+import re
 import sys
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from budget_app.decorators import handle_cli_errors, measure_time
 from budget_app.exceptions import ValidationError
@@ -16,6 +17,57 @@ from budget_app.formatters import format_currency, format_table
 from budget_app.models import validate_date_string, validate_positive_amount, validate_transaction_type
 from budget_app.service import BudgetService
 from budget_app.storage import StorageManager
+
+
+def parse_amount_str(val: Any) -> Optional[int]:
+    """Parse integer amount from string, supporting commas and Korean units ('만', '만원', '원')."""
+    if val is None:
+        return None
+    val_str = str(val).strip().replace(",", "").replace(" ", "")
+    if val_str.endswith("만원"):
+        base = val_str[:-2]
+        if base.isdigit():
+            return int(base) * 10000
+    elif val_str.endswith("만"):
+        base = val_str[:-1]
+        if base.isdigit():
+            return int(base) * 10000
+    elif val_str.endswith("원"):
+        base = val_str[:-1]
+        if base.isdigit():
+            return int(base)
+    if val_str.isdigit():
+        return int(val_str)
+    return None
+
+
+def parse_month_str(val: Any) -> Optional[str]:
+    """Parse month string like '2026-10', '10', '10월' into canonical 'YYYY-MM'."""
+    if not val:
+        return None
+    val_str = str(val).strip()
+    if re.match(r"^\d{4}-\d{2}$", val_str):
+        return val_str
+    m = val_str.replace("월", "").strip()
+    if m.isdigit():
+        num = int(m)
+        if 1 <= num <= 12:
+            return f"{datetime.now().year}-{num:02d}"
+    return None
+
+
+def normalize_tx_id(val: str) -> str:
+    """Normalize user input ID like '1', 'TX-1', 'TX-000001' to canonical 'TX-000001'."""
+    if not val:
+        return ""
+    val_str = str(val).strip()
+    if val_str.isdigit():
+        return f"TX-{int(val_str):06d}"
+    if val_str.upper().startswith("TX-"):
+        p = val_str[3:]
+        if p.isdigit():
+            return f"TX-{int(p):06d}"
+    return val_str
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="최신 거래 내역 목록 조회 (스트리밍)")
     list_parser.add_argument("--limit", type=int, default=10, help="조회할 최대 거래 수 (기본값: 10)")
     list_parser.add_argument("--table", action="store_true", help="테이블 포맷으로 정렬 출력")
+    list_parser.add_argument("pos_args", nargs="*", help="위치 인자 ([개수] [표/table])")
 
     # 3. search
     search_parser = subparsers.add_parser("search", help="조건별 거래 내역 검색")
@@ -62,19 +115,22 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--tag", help="태그 필터")
     search_parser.add_argument("--limit", type=int, default=None, help="검색 결과 최대 개수")
     search_parser.add_argument("--table", action="store_true", help="테이블 포맷으로 정렬 출력")
+    search_parser.add_argument("pos_args", nargs="*", help="위치 인자 (검색 키워드 등)")
 
     # 4. summary
     summary_parser = subparsers.add_parser("summary", help="월별 재정 요약 및 예산 현황 리포트")
-    summary_parser.add_argument("--month", required=True, help="조회할 연월 (YYYY-MM)")
+    summary_parser.add_argument("--month", required=False, help="조회할 연월 (YYYY-MM)")
     summary_parser.add_argument("--top", type=int, default=5, help="지출 상위 카테고리 수 (기본값: 5)")
+    summary_parser.add_argument("pos_args", nargs="*", help="위치 인자 ([연월] [TOP수])")
 
     # 5. budget
     budget_parser = subparsers.add_parser("budget", help="월별 예산 설정 및 조회")
     budget_sub = budget_parser.add_subparsers(dest="budget_action", help="예산 하위 작업")
 
     budget_set = budget_sub.add_parser("set", help="월 예산 설정")
-    budget_set.add_argument("--month", required=True, help="대상 연월 (YYYY-MM)")
-    budget_set.add_argument("--amount", type=int, required=True, help="예산 금액 (원)")
+    budget_set.add_argument("--month", required=False, help="대상 연월 (YYYY-MM)")
+    budget_set.add_argument("--amount", type=int, required=False, help="예산 금액 (원)")
+    budget_set.add_argument("pos_args", nargs="*", help="위치 인자 ([연월] 금액)")
 
     budget_sub.add_parser("list", help="설정된 전체 월별 예산 목록 조회")
 
@@ -93,28 +149,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     # 7. update
     update_parser = subparsers.add_parser("update", help="기존 거래 내역 수정")
-    update_parser.add_argument("--id", required=True, help="수정할 거래 ID (예: TX-000001)")
+    update_parser.add_argument("--id", required=False, help="수정할 거래 ID (예: TX-000001)")
     update_parser.add_argument("--date", help="수정할 날짜 (YYYY-MM-DD)")
     update_parser.add_argument("--type", choices=["income", "expense"], help="수정할 타입")
     update_parser.add_argument("--category", help="수정할 카테고리")
     update_parser.add_argument("--amount", type=int, help="수정할 금액")
     update_parser.add_argument("--memo", help="수정할 메모")
     update_parser.add_argument("--tags", help="수정할 태그 (쉼표 구분)")
+    update_parser.add_argument("pos_args", nargs="*", help="수정할 거래 ID 및 필드")
 
     # 8. delete
     delete_parser = subparsers.add_parser("delete", help="거래 내역 삭제")
-    delete_parser.add_argument("--id", required=True, help="삭제할 거래 ID (예: TX-000001)")
+    delete_parser.add_argument("--id", required=False, help="삭제할 거래 ID (예: TX-000001)")
+    delete_parser.add_argument("pos_id", nargs="?", help="삭제할 거래 ID")
 
     # 9. import
     import_parser = subparsers.add_parser("import", help="CSV 파일에서 거래 내역 일괄 가져오기")
-    import_parser.add_argument("--from", dest="from_file", required=True, help="가져올 CSV 파일 경로")
+    import_parser.add_argument("--from", dest="from_file", required=False, help="가져올 CSV 파일 경로")
+    import_parser.add_argument("pos_file", nargs="?", help="가져올 CSV 파일 경로")
 
     # 10. export
     export_parser = subparsers.add_parser("export", help="거래 내역을 CSV 파일로 내보내기")
-    export_parser.add_argument("--out", required=True, help="저장할 CSV 파일 경로")
+    export_parser.add_argument("--out", required=False, help="저장할 CSV 파일 경로")
     export_parser.add_argument("--month", help="내보낼 연월 (YYYY-MM)")
     export_parser.add_argument("--from", dest="from_date", help="시작일 (YYYY-MM-DD)")
     export_parser.add_argument("--to", dest="to_date", help="종료일 (YYYY-MM-DD)")
+    export_parser.add_argument("pos_args", nargs="*", help="위치 인자 ([출력파일명] [연월])")
 
     # 11. backup (Bonus)
     backup_parser = subparsers.add_parser("backup", help="[보너스] 데이터 전체 백업 zip 파일 생성")
@@ -237,12 +297,26 @@ def format_tx_line(tx) -> str:
 
 def run_list(service: BudgetService, args: argparse.Namespace) -> int:
     """Execute 'list' command using generator streaming."""
-    transactions = list(service.list_transactions(limit=args.limit))
+    limit = getattr(args, "limit", None)
+    use_table = getattr(args, "table", False)
+    pos_args = getattr(args, "pos_args", []) or []
+
+    for p in pos_args:
+        p_str = str(p).strip()
+        if p_str.isdigit():
+            limit = int(p_str)
+        elif p_str in ("표", "테이블", "table"):
+            use_table = True
+
+    if limit is None:
+        limit = 10
+
+    transactions = list(service.list_transactions(limit=limit))
     if not transactions:
         print("[안내] 등록된 거래 내역이 없습니다.")
         return 0
 
-    if args.table:
+    if use_table:
         headers = ["ID", "날짜", "타입", "카테고리", "금액", "메모", "태그"]
         rows = [
             [
@@ -266,22 +340,45 @@ def run_list(service: BudgetService, args: argparse.Namespace) -> int:
 
 def run_search(service: BudgetService, args: argparse.Namespace) -> int:
     """Execute 'search' command using generator streaming."""
+    from_date = getattr(args, "from_date", None)
+    to_date = getattr(args, "to_date", None)
+    cat_filter = getattr(args, "category", None)
+    type_filter = getattr(args, "type", None)
+    keyword = getattr(args, "q", None)
+    tag = getattr(args, "tag", None)
+    limit = getattr(args, "limit", None)
+    use_table = getattr(args, "table", False)
+    pos_args = getattr(args, "pos_args", []) or []
+
+    for p in pos_args:
+        p_str = str(p).strip()
+        if p_str in ("지출", "expense"):
+            type_filter = "expense"
+        elif p_str in ("수입", "income"):
+            type_filter = "income"
+        elif p_str in ("표", "테이블", "table"):
+            use_table = True
+        elif p_str.isdigit():
+            limit = int(p_str)
+        elif not keyword:
+            keyword = p_str
+
     matching = list(
         service.search_transactions(
-            from_date=args.from_date,
-            to_date=args.to_date,
-            category=args.category,
-            tx_type=args.type,
-            keyword=args.q,
-            tag=args.tag,
-            limit=args.limit,
+            from_date=from_date,
+            to_date=to_date,
+            category=cat_filter,
+            tx_type=type_filter,
+            keyword=keyword,
+            tag=tag,
+            limit=limit,
         )
     )
     if not matching:
         print("[안내] 조건에 일치하는 거래 내역이 없습니다.")
         return 0
 
-    if args.table:
+    if use_table:
         headers = ["ID", "날짜", "타입", "카테고리", "금액", "메모", "태그"]
         rows = [
             [
@@ -305,10 +402,25 @@ def run_search(service: BudgetService, args: argparse.Namespace) -> int:
 
 def run_summary(service: BudgetService, args: argparse.Namespace) -> int:
     """Execute 'summary' command."""
-    summary = service.get_monthly_summary(month=args.month, top_n=args.top)
+    month = getattr(args, "month", None)
+    top = getattr(args, "top", 5) or 5
+    pos_args = getattr(args, "pos_args", []) or []
+
+    for p in pos_args:
+        p_str = str(p).strip()
+        parsed_m = parse_month_str(p_str)
+        if parsed_m and not month:
+            month = parsed_m
+        elif p_str.isdigit():
+            top = int(p_str)
+
+    if not month:
+        month = datetime.now().strftime("%Y-%m")
+
+    summary = service.get_monthly_summary(month=month, top_n=top)
 
     if not summary["has_data"]:
-        print(f"[안내] {args.month} 월의 거래 데이터가 없습니다.")
+        print(f"[안내] {month} 월의 거래 데이터가 없습니다.")
         return 0
 
     print(f"총 수입: {summary['total_income']}원")
@@ -332,9 +444,51 @@ def run_summary(service: BudgetService, args: argparse.Namespace) -> int:
 
 def run_budget(service: BudgetService, args: argparse.Namespace) -> int:
     """Execute 'budget' subcommand."""
-    action = args.budget_action
+    action = getattr(args, "budget_action", None)
+    pos_budget = getattr(args, "pos_budget_args", []) or []
+    pos_args = getattr(args, "pos_args", []) or []
+
+    # If user ran `budget 1000000` or `budget set 1000000`
+    if action is None:
+        if pos_budget:
+            first = pos_budget[0]
+            if first in ("set", "설정"):
+                action = "set"
+                pos_args = pos_budget[1:] + pos_args
+            elif first in ("list", "목록", "조회"):
+                action = "list"
+            else:
+                action = "set"
+                pos_args = pos_budget + pos_args
+        else:
+            action = "list"
+
     if action == "set":
-        b = service.set_budget(month=args.month, amount=args.amount)
+        month = getattr(args, "month", None)
+        amount = getattr(args, "amount", None)
+
+        if pos_args:
+            for p in pos_args:
+                p_str = str(p).strip()
+                parsed_amt = parse_amount_str(p_str)
+                parsed_m = parse_month_str(p_str)
+                if parsed_m and not month:
+                    month = parsed_m
+                elif parsed_amt is not None and amount is None:
+                    amount = parsed_amt
+
+        # If month still not provided, default to current month
+        if not month:
+            month = datetime.now().strftime("%Y-%m")
+
+        # If amount still not provided, prompt interactively
+        if amount is None:
+            raw_amt = prompt_interactive_input(f"{month} 예산 금액(원)")
+            amount = parse_amount_str(raw_amt)
+            if amount is None:
+                raise ValidationError("올바른 예산 금액을 입력해주세요.", hint="예: 1000000 또는 100만")
+
+        b = service.set_budget(month=month, amount=amount)
         print(f"[저장 완료] {b.month} 예산 {b.amount}원")
         return 0
     elif action == "list":
@@ -354,9 +508,25 @@ def run_budget(service: BudgetService, args: argparse.Namespace) -> int:
 
 def run_category(service: BudgetService, args: argparse.Namespace) -> int:
     """Execute 'category' subcommand."""
-    action = args.category_action
+    action = getattr(args, "category_action", None)
+    pos_cat = getattr(args, "pos_cat_args", []) or []
+
+    if action is None:
+        if pos_cat:
+            first = pos_cat[0]
+            if first in ("add", "추가"):
+                action = "add"
+                args.name = pos_cat[1] if len(pos_cat) > 1 else None
+            elif first in ("remove", "delete", "삭제", "제거"):
+                action = "remove"
+                args.name = pos_cat[1] if len(pos_cat) > 1 else None
+            else:
+                action = "list"
+        else:
+            action = "list"
+
     if action == "add":
-        name = args.name
+        name = getattr(args, "name", None)
         if not name:
             name = prompt_interactive_input("카테고리명")
         cat = service.add_category(name)
@@ -371,12 +541,13 @@ def run_category(service: BudgetService, args: argparse.Namespace) -> int:
             print(f"- {c.name}")
         return 0
     elif action == "remove":
-        name = args.name
+        name = getattr(args, "name", None)
         if not name:
             name = prompt_interactive_input("삭제할 카테고리명")
-        service.remove_category(name, replacement=args.replace)
-        if args.replace:
-            print(f"[삭제 완료] category={name} (기존 거래는 '{args.replace}'(으)로 대체 반영됨)")
+        replace = getattr(args, "replace", None)
+        service.remove_category(name, replacement=replace)
+        if replace:
+            print(f"[삭제 완료] category={name} (기존 거래는 '{replace}'(으)로 대체 반영됨)")
         else:
             print(f"[삭제 완료] category={name}")
         return 0
@@ -391,12 +562,19 @@ def run_update(service: BudgetService, args: argparse.Namespace) -> int:
     Execute 'update' command.
     Supports option-based update, or interactive prompt if options are omitted.
     """
-    tx_id = args.id
+    tx_id = getattr(args, "id", None)
+    pos_args = getattr(args, "pos_args", []) or []
+    if not tx_id and pos_args:
+        tx_id = pos_args[0]
+    if not tx_id:
+        tx_id = prompt_interactive_input("수정할 거래 ID")
+    tx_id = normalize_tx_id(tx_id)
+
     existing = service.storage.transactions.get_by_id(tx_id)
     if not existing:
         raise ValidationError(
             f"ID '{tx_id}'에 해당하는 거래를 찾을 수 없습니다.",
-            hint="list 명령으로 존재하는 거래 ID를 확인해주세요.",
+            hint="목록 명령으로 존재하는 거래 ID를 확인해주세요.",
         )
 
     # If no update flags passed, enter interactive mode for fields
@@ -440,27 +618,56 @@ def run_update(service: BudgetService, args: argparse.Namespace) -> int:
 
 def run_delete(service: BudgetService, args: argparse.Namespace) -> int:
     """Execute 'delete' command."""
-    service.delete_transaction(args.id)
-    print(f"[삭제 완료] id={args.id} 거래가 정상적으로 삭제되었습니다.")
+    tx_id = getattr(args, "id", None) or getattr(args, "pos_id", None)
+    if not tx_id:
+        tx_id = prompt_interactive_input("삭제할 거래 ID")
+    tx_id = normalize_tx_id(tx_id)
+
+    service.delete_transaction(tx_id)
+    print(f"[삭제 완료] id={tx_id} 거래가 정상적으로 삭제되었습니다.")
     return 0
 
 
 def run_import(service: BudgetService, args: argparse.Namespace) -> int:
     """Execute 'import' command."""
-    imported, skipped = service.import_csv(args.from_file)
+    from_file = getattr(args, "from_file", None) or getattr(args, "pos_file", None)
+    if not from_file:
+        from_file = prompt_interactive_input("가져올 CSV 파일 경로")
+    imported, skipped = service.import_csv(from_file)
     print(f"[완료] imported={imported}, skipped={skipped}")
     return 0
 
 
 def run_export(service: BudgetService, args: argparse.Namespace) -> int:
     """Execute 'export' command."""
+    out_file = getattr(args, "out", None)
+    month = getattr(args, "month", None)
+    from_date = getattr(args, "from_date", None)
+    to_date = getattr(args, "to_date", None)
+    pos_args = getattr(args, "pos_args", []) or []
+
+    for p in pos_args:
+        p_str = str(p).strip()
+        if p_str.endswith(".csv"):
+            out_file = p_str
+        else:
+            parsed_m = parse_month_str(p_str)
+            if parsed_m:
+                month = parsed_m
+
+    if not month and not (from_date and to_date):
+        month = datetime.now().strftime("%Y-%m")
+
+    if not out_file:
+        out_file = f"가계부_내보내기_{month}.csv"
+
     count = service.export_csv(
-        out_path=args.out,
-        month=args.month,
-        from_date=args.from_date,
-        to_date=args.to_date,
+        out_path=out_file,
+        month=month,
+        from_date=from_date,
+        to_date=to_date,
     )
-    print(f"[완료] {os.path.basename(args.out)} ({count} records)")
+    print(f"[완료] {os.path.basename(out_file)} ({count} records)")
     return 0
 
 
@@ -527,6 +734,9 @@ def normalize_cli_args(argv: List[str]) -> List[str]:
         return []
 
     tokens = list(argv)
+    if tokens and tokens[0] in ("도움말", "help"):
+        return ["--help"]
+
     normalized: List[str] = []
     i = 0
 
@@ -571,19 +781,66 @@ def normalize_cli_args(argv: List[str]) -> List[str]:
         "적용": "apply",
     }
 
+    two_word_map = {
+        "월별 요약": ["summary"],
+        "월별 리포트": ["summary"],
+        "카테고리 관리": ["category"],
+        "카테고리 목록": ["category", "list"],
+        "카테고리 조회": ["category", "list"],
+        "카테고리 추가": ["category", "add"],
+        "카테고리 삭제": ["category", "remove"],
+        "예산 설정": ["budget", "set"],
+        "예산 목록": ["budget", "list"],
+        "예산 조회": ["budget", "list"],
+        "목록 조회": ["list"],
+        "내역 조회": ["list"],
+        "거래 목록": ["list"],
+        "거래 내역": ["list"],
+        "거래 조회": ["list"],
+        "거래 추가": ["add"],
+        "거래 수정": ["update"],
+        "거래 삭제": ["delete"],
+        "거래 검색": ["search"],
+        "반복 추가": ["recurring", "add"],
+        "반복 목록": ["recurring", "list"],
+        "반복 조회": ["recurring", "list"],
+        "반복 적용": ["recurring", "apply"],
+    }
+
     while i < len(tokens):
-        # Two-word commands like "월별 요약", "카테고리 관리"
+        # Two-word compound commands check
         if i + 1 < len(tokens):
             two_word = f"{tokens[i]} {tokens[i+1]}"
-            if two_word in ("월별 요약", "카테고리 관리"):
-                if two_word == "월별 요약":
-                    normalized.append("summary")
-                elif two_word == "카테고리 관리":
-                    normalized.append("category")
+            if two_word in two_word_map:
+                normalized.extend(two_word_map[two_word])
                 i += 2
                 continue
 
         tok = tokens[i]
+        # Ignore redundant duplicate command words (e.g. `list list` or `list 조회`)
+        if normalized and normalized[-1] == "list" and tok in ("list", "조회", "목록", "내역"):
+            i += 1
+            continue
+        if normalized and normalized[-1] == "search" and tok in ("search", "검색"):
+            i += 1
+            continue
+        if normalized and normalized[-1] == "add" and tok in ("add", "추가", "거래"):
+            i += 1
+            continue
+        if normalized and normalized[-1] == "summary" and tok in ("summary", "요약", "리포트"):
+            i += 1
+            continue
+
+        # If previous was 'budget' and tok looks like an amount or month, auto-insert 'set'
+        if normalized and normalized[-1] == "budget" and (parse_amount_str(tok) is not None or parse_month_str(tok) is not None):
+            normalized.append("set")
+
+        # Table formatting alias
+        if tok in ("표", "테이블") and normalized and normalized[0] in ("list", "search"):
+            normalized.append("--table")
+            i += 1
+            continue
+
         if normalized and normalized[-1] in ("budget", "category", "recurring") and tok in subcmd_map:
             normalized.append(subcmd_map[tok])
         elif tok in cmd_map:

@@ -126,7 +126,11 @@ class BudgetService:
                 continue
             if tx_type and tx.type != tx_type:
                 continue
-            if keyword_lower and keyword_lower not in tx.memo.lower():
+            if keyword_lower and not (
+                keyword_lower in tx.memo.lower()
+                or any(keyword_lower in t.lower() for t in tx.tags)
+                or keyword_lower in tx.category.lower()
+            ):
                 continue
             if tag_lower and not any(tag_lower == t.lower() for t in tx.tags):
                 continue
