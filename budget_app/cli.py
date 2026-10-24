@@ -632,7 +632,7 @@ def run_import(service: BudgetService, args: argparse.Namespace) -> int:
     """Execute 'import' command."""
     from_file = getattr(args, "from_file", None) or getattr(args, "pos_file", None)
     if not from_file:
-        from_file = prompt_interactive_input("가져올 CSV 파일 경로")
+        from_file = prompt_interactive_input("가져올 CSV 파일 경로", default="examples/sample_import.csv")
     imported, skipped = service.import_csv(from_file)
     print(f"[완료] imported={imported}, skipped={skipped}")
     return 0
