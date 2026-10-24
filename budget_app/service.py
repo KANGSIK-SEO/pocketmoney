@@ -334,10 +334,24 @@ class BudgetService:
         Returns (imported_count, skipped_count).
         """
         if not os.path.exists(file_path):
-            raise ImportExportError(
-                f"가져올 CSV 파일을 찾을 수 없습니다: '{file_path}'",
-                hint="파일 경로를 다시 확인해주세요.",
-            )
+            repo_root = os.path.dirname(os.path.abspath(self.storage.data_dir))
+            candidates = [
+                os.path.join(repo_root, file_path),
+                os.path.join(repo_root, "examples", file_path),
+                os.path.join(repo_root, "examples", "sample_import.csv") if file_path in ("sample.csv", "sample_import.csv") else None,
+            ]
+            found = None
+            for c in candidates:
+                if c and os.path.exists(c):
+                    found = c
+                    break
+            if found:
+                file_path = found
+            else:
+                raise ImportExportError(
+                    f"가져올 CSV 파일을 찾을 수 없습니다: '{file_path}'",
+                    hint="파일 경로를 다시 확인해주세요. (예: examples/sample_import.csv)",
+                )
 
         imported = 0
         skipped = 0
